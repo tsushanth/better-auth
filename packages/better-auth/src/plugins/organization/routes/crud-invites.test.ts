@@ -550,6 +550,219 @@ describe("invitation teamId must belong to the invitation's organization", async
 		expect(firstTeamMembers.length).toBe(0);
 	});
 
+	it("keeps the invitation pending when a referenced team no longer exists", async () => {
+		const { client, signInWithTestUser, signInWithUser, cookieSetter, db } =
+			await setup();
+
+		// Org with two teams so the invited team can be removed afterwards.
+		const { headers: ownerHeaders } = await signInWithTestUser();
+		const org = await client.organization.create({
+			name: "Org A",
+			slug: "org-a",
+			fetchOptions: {
+				headers: ownerHeaders,
+				onSuccess: cookieSetter(ownerHeaders),
+			},
+		});
+		const invitedTeam = await client.organization.createTeam({
+			name: "Team A",
+			organizationId: org.data!.id,
+			fetchOptions: { headers: ownerHeaders },
+		});
+		await client.organization.createTeam({
+			name: "Team B",
+			organizationId: org.data!.id,
+			fetchOptions: { headers: ownerHeaders },
+		});
+
+		const invite = await client.organization.inviteMember({
+			organizationId: org.data!.id,
+			email: INVITEE_EMAIL,
+			role: "member",
+			teamId: invitedTeam.data!.id,
+			fetchOptions: { headers: ownerHeaders },
+		});
+		const invitationId = String(invite.data!.id);
+
+		// Delete the team row directly so the invitation keeps a dangling
+		// reference; the removeTeam route now strips it from invitations.
+		await db.delete({
+			model: "team",
+			where: [{ field: "id", value: invitedTeam.data!.id }],
+		});
+
+		await client.signUp.email({
+			email: INVITEE_EMAIL,
+			password: PASSWORD,
+			name: "Invitee",
+		});
+		const { headers: inviteeHeaders } = await signInWithUser(
+			INVITEE_EMAIL,
+			PASSWORD,
+		);
+		const accept = await client.organization.acceptInvitation({
+			invitationId,
+			fetchOptions: { headers: inviteeHeaders },
+		});
+
+		expect(accept.error?.code).toBe("TEAM_NOT_FOUND");
+
+		// The invitation must stay pending so accepting remains retryable.
+		const invitationAfter = await db.findOne<{ status: string }>({
+			model: "invitation",
+			where: [{ field: "id", value: invitationId }],
+		});
+		expect(invitationAfter?.status).toBe("pending");
+	});
+
+	it("clears the removed team from a pending invitation so it degrades to an organization-level invitation", async () => {
+		const { client, signInWithTestUser, signInWithUser, cookieSetter, db } =
+			await setup();
+
+		// Org with two teams so the invited team can be removed afterwards.
+		const { headers: ownerHeaders } = await signInWithTestUser();
+		const org = await client.organization.create({
+			name: "Org A",
+			slug: "org-a",
+			fetchOptions: {
+				headers: ownerHeaders,
+				onSuccess: cookieSetter(ownerHeaders),
+			},
+		});
+		const invitedTeam = await client.organization.createTeam({
+			name: "Team A",
+			organizationId: org.data!.id,
+			fetchOptions: { headers: ownerHeaders },
+		});
+		await client.organization.createTeam({
+			name: "Team B",
+			organizationId: org.data!.id,
+			fetchOptions: { headers: ownerHeaders },
+		});
+
+		const invite = await client.organization.inviteMember({
+			organizationId: org.data!.id,
+			email: INVITEE_EMAIL,
+			role: "member",
+			teamId: invitedTeam.data!.id,
+			fetchOptions: { headers: ownerHeaders },
+		});
+		const invitationId = String(invite.data!.id);
+
+		const removed = await client.organization.removeTeam({
+			teamId: invitedTeam.data!.id,
+			organizationId: org.data!.id,
+			fetchOptions: { headers: ownerHeaders },
+		});
+		expect(removed.error).toBeNull();
+
+		const invitationAfter = await db.findOne<{
+			status: string;
+			teamId: string | null;
+		}>({
+			model: "invitation",
+			where: [{ field: "id", value: invitationId }],
+		});
+		expect(invitationAfter?.status).toBe("pending");
+		expect(invitationAfter?.teamId ?? null).toBeNull();
+
+		await client.signUp.email({
+			email: INVITEE_EMAIL,
+			password: PASSWORD,
+			name: "Invitee",
+		});
+		const { headers: inviteeHeaders, res: inviteeRes } = await signInWithUser(
+			INVITEE_EMAIL,
+			PASSWORD,
+		);
+		const accept = await client.organization.acceptInvitation({
+			invitationId,
+			fetchOptions: { headers: inviteeHeaders },
+		});
+
+		expect(accept.error).toBeNull();
+		expect(accept.data?.member).toBeDefined();
+
+		const teamMembers = await db.findMany({
+			model: "teamMember",
+			where: [{ field: "userId", value: inviteeRes.user.id }],
+		});
+		expect(teamMembers.length).toBe(0);
+	});
+
+	it("keeps the remaining teams on a multi-team invitation when one team is removed", async () => {
+		const { client, signInWithTestUser, signInWithUser, cookieSetter, db } =
+			await setup();
+
+		const { headers: ownerHeaders } = await signInWithTestUser();
+		const org = await client.organization.create({
+			name: "Org A",
+			slug: "org-a",
+			fetchOptions: {
+				headers: ownerHeaders,
+				onSuccess: cookieSetter(ownerHeaders),
+			},
+		});
+		const teamA = await client.organization.createTeam({
+			name: "Team A",
+			organizationId: org.data!.id,
+			fetchOptions: { headers: ownerHeaders },
+		});
+		const teamB = await client.organization.createTeam({
+			name: "Team B",
+			organizationId: org.data!.id,
+			fetchOptions: { headers: ownerHeaders },
+		});
+
+		const invite = await client.organization.inviteMember({
+			organizationId: org.data!.id,
+			email: INVITEE_EMAIL,
+			role: "member",
+			teamId: [teamA.data!.id, teamB.data!.id],
+			fetchOptions: { headers: ownerHeaders },
+		});
+		const invitationId = String(invite.data!.id);
+
+		const removed = await client.organization.removeTeam({
+			teamId: teamA.data!.id,
+			organizationId: org.data!.id,
+			fetchOptions: { headers: ownerHeaders },
+		});
+		expect(removed.error).toBeNull();
+
+		const invitationAfter = await db.findOne<{
+			status: string;
+			teamId: string | null;
+		}>({
+			model: "invitation",
+			where: [{ field: "id", value: invitationId }],
+		});
+		expect(invitationAfter?.status).toBe("pending");
+		expect(invitationAfter?.teamId).toBe(teamB.data!.id);
+
+		await client.signUp.email({
+			email: INVITEE_EMAIL,
+			password: PASSWORD,
+			name: "Invitee",
+		});
+		const { headers: inviteeHeaders, res: inviteeRes } = await signInWithUser(
+			INVITEE_EMAIL,
+			PASSWORD,
+		);
+		const accept = await client.organization.acceptInvitation({
+			invitationId,
+			fetchOptions: { headers: inviteeHeaders },
+		});
+
+		expect(accept.error).toBeNull();
+
+		const teamMembers = await db.findMany<{ teamId: string }>({
+			model: "teamMember",
+			where: [{ field: "userId", value: inviteeRes.user.id }],
+		});
+		expect(teamMembers.map((m) => m.teamId)).toEqual([teamB.data!.id]);
+	});
+
 	it("does not list another organization's team members from a mismatched teamMember row", async () => {
 		const { client, signInWithTestUser, signInWithUser, cookieSetter, db } =
 			await setup();

@@ -732,6 +732,28 @@ export const acceptInvitation = <O extends OrganizationOptions>(options: O) =>
 				});
 			}
 
+			if (
+				ctx.context.orgOptions.teams &&
+				ctx.context.orgOptions.teams.enabled &&
+				"teamId" in invitation &&
+				invitation.teamId
+			) {
+				// Validate teams before consuming the invitation so a failed
+				// check leaves it pending and retryable.
+				for (const teamId of (invitation.teamId as string).split(",")) {
+					const team = await adapter.findTeamById({
+						teamId,
+						organizationId: invitation.organizationId,
+					});
+					if (!team) {
+						throw APIError.from(
+							"BAD_REQUEST",
+							ORGANIZATION_ERROR_CODES.TEAM_NOT_FOUND,
+						);
+					}
+				}
+			}
+
 			const acceptedI = await adapter.updateInvitation({
 				invitationId: ctx.body.invitationId,
 				status: "accepted",
@@ -752,22 +774,6 @@ export const acceptInvitation = <O extends OrganizationOptions>(options: O) =>
 				const onlyOne = teamIds.length === 1;
 
 				for (const teamId of teamIds) {
-					// Confirm the team still belongs to the invitation's
-					// organization before adding the member. This keeps team
-					// membership consistent with the invitation's organization,
-					// including for older invitations and for teams that were
-					// moved or removed between invite and accept.
-					const team = await adapter.findTeamById({
-						teamId,
-						organizationId: invitation.organizationId,
-					});
-					if (!team) {
-						throw APIError.from(
-							"BAD_REQUEST",
-							ORGANIZATION_ERROR_CODES.TEAM_NOT_FOUND,
-						);
-					}
-
 					await adapter.findOrCreateTeamMember({
 						teamId: teamId,
 						userId: session.user.id,
