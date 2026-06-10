@@ -13,6 +13,7 @@ import {
 } from "better-auth/api";
 import { generateRandomString } from "better-auth/crypto";
 import type { Member } from "better-auth/plugins";
+import { getOrgAdapter } from "better-auth/plugins";
 import * as z from "zod";
 import { getAccountId, getUserFullName, getUserPrimaryEmail } from "./mappings";
 import type { AuthMiddleware } from "./middlewares";
@@ -1147,14 +1148,35 @@ export const deleteSCIMUser = (authMiddleware: AuthMiddleware) =>
 			// Deprovision instead: drop their membership in this organization and
 			// the SCIM account link for this provider, leaving the user intact.
 			if (organizationId) {
-				await ctx.context.adapter.transaction(async () => {
-					await ctx.context.adapter.deleteMany({
-						model: "member",
-						where: [
-							{ field: "organizationId", value: organizationId },
-							{ field: "userId", value: userId },
-						],
+				// Remove through the org adapter to keep the organization
+				// plugin's member-removal semantics.
+				const orgOptions = ctx.context.getPlugin("organization")?.options;
+				const orgAdapter = getOrgAdapter(ctx.context, orgOptions);
+				const member = await findOrganizationMember(
+					ctx,
+					userId,
+					organizationId,
+				);
+				const organization = member
+					? await orgAdapter.findOrganizationById(organizationId)
+					: null;
+
+				if (member && organization) {
+					await orgOptions?.organizationHooks?.beforeRemoveMember?.({
+						member,
+						user,
+						organization,
 					});
+				}
+
+				await ctx.context.adapter.transaction(async () => {
+					if (member) {
+						await orgAdapter.deleteMember({
+							memberId: member.id,
+							organizationId,
+							userId,
+						});
+					}
 					if (account) {
 						await ctx.context.adapter.delete({
 							model: "account",
@@ -1162,6 +1184,14 @@ export const deleteSCIMUser = (authMiddleware: AuthMiddleware) =>
 						});
 					}
 				});
+
+				if (member && organization) {
+					await orgOptions?.organizationHooks?.afterRemoveMember?.({
+						member,
+						user,
+						organization,
+					});
+				}
 
 				ctx.setStatus(204);
 				return;
