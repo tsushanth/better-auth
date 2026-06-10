@@ -1,5 +1,17 @@
 import type { BetterAuthOptions } from "@better-auth/core";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import type { GoogleProfile } from "@better-auth/core/social-providers";
+import { safeJSONParse } from "@better-auth/core/utils/json";
+import { HttpResponse, http } from "msw";
+import { setupServer } from "msw/node";
+import {
+	afterAll,
+	afterEach,
+	beforeAll,
+	describe,
+	expect,
+	it,
+	vi,
+} from "vitest";
 import {
 	expireCookie,
 	getChunkedCookie,
@@ -8,7 +20,9 @@ import {
 	getSessionCookie,
 	parseCookies,
 } from "../cookies";
+import { signJWT, symmetricDecodeJWT } from "../crypto";
 import { getTestInstance } from "../test-utils/test-instance";
+import { DEFAULT_SECRET } from "../utils/constants";
 import {
 	applySetCookies,
 	HOST_COOKIE_PREFIX,
@@ -1737,5 +1751,190 @@ describe("expireCookie", () => {
 		expect(setCookieHeader).not.toContain("target=valid");
 		expect(setCookieHeader).not.toContain("target.0=chunk");
 		expect(setCookieHeader).toContain("target=; Path=/; Max-Age=0");
+	});
+});
+
+describe("account cookie sync on user switch", () => {
+	const server = setupServer();
+	let googleUser = { email: "first@test.com", sub: "first-google-sub" };
+
+	beforeAll(() => {
+		server.listen({ onUnhandledRequest: "bypass" });
+		server.use(
+			http.post("https://oauth2.googleapis.com/token", async () => {
+				const data: GoogleProfile = {
+					email: googleUser.email,
+					email_verified: true,
+					name: "Test User",
+					picture: "https://lh3.googleusercontent.com/a-/AOh14GjQ4Z7Vw",
+					exp: 1234567890,
+					sub: googleUser.sub,
+					iat: 1234567890,
+					aud: "test",
+					azp: "test",
+					nbf: 1234567890,
+					iss: "test",
+					locale: "en",
+					jti: "test",
+					given_name: "Test",
+					family_name: "User",
+				};
+				const idToken = await signJWT(data, DEFAULT_SECRET);
+				return HttpResponse.json({
+					access_token: `access-token-${googleUser.sub}`,
+					refresh_token: `refresh-token-${googleUser.sub}`,
+					id_token: idToken,
+				});
+			}),
+		);
+	});
+
+	afterAll(() => server.close());
+
+	const getInstance = () =>
+		getTestInstance({
+			socialProviders: {
+				google: {
+					clientId: "test",
+					clientSecret: "test",
+					enabled: true,
+				},
+			},
+			account: {
+				storeAccountCookie: true,
+			},
+			session: {
+				cookieCache: {
+					enabled: true,
+				},
+			},
+		});
+
+	it("should keep the fresh account cookie issued for the new user when the request carries another user's stale account cookie", async () => {
+		const { auth, client, cookieSetter } = await getInstance();
+		const ctx = await auth.$context;
+		const accountDataCookieName = ctx.authCookies.accountData.name;
+
+		// User A signs in with Google, storing their account_data cookie
+		const headers = new Headers();
+		googleUser = { email: "switch-first@test.com", sub: "switch-first-sub" };
+		const firstSignIn = await client.signIn.social({
+			provider: "google",
+			callbackURL: "/callback",
+			fetchOptions: {
+				onSuccess: cookieSetter(headers),
+			},
+		});
+		const firstState =
+			firstSignIn.data && "url" in firstSignIn.data && firstSignIn.data.url
+				? new URL(firstSignIn.data.url).searchParams.get("state") || ""
+				: "";
+		await client.$fetch("/callback/google", {
+			query: { state: firstState, code: "test" },
+			headers,
+			method: "GET",
+			onError(context) {
+				expect(context.response.status).toBe(302);
+				cookieSetter(headers)({ response: context.response });
+			},
+		});
+
+		// User B signs in on the same browser without A signing out
+		googleUser = { email: "switch-second@test.com", sub: "switch-second-sub" };
+		const secondSignIn = await client.signIn.social({
+			provider: "google",
+			callbackURL: "/callback",
+			fetchOptions: {
+				headers,
+				onSuccess: cookieSetter(headers),
+			},
+		});
+		const secondState =
+			secondSignIn.data && "url" in secondSignIn.data && secondSignIn.data.url
+				? new URL(secondSignIn.data.url).searchParams.get("state") || ""
+				: "";
+		let secondCallbackSetCookie = "";
+		await client.$fetch("/callback/google", {
+			query: { state: secondState, code: "test" },
+			headers,
+			method: "GET",
+			onError(context) {
+				expect(context.response.status).toBe(302);
+				secondCallbackSetCookie =
+					context.response.headers.get("set-cookie") || "";
+				cookieSetter(headers)({ response: context.response });
+			},
+		});
+
+		// The fresh cookie issued for user B must survive the stale-cookie sync
+		const accountSetCookie = parseSetCookieHeader(secondCallbackSetCookie).get(
+			accountDataCookieName,
+		);
+		expect(accountSetCookie?.value).toBeTruthy();
+		expect(accountSetCookie?.["max-age"]).not.toBe(0);
+
+		const session = await auth.api.getSession({ headers });
+		expect(session?.user.email).toBe("switch-second@test.com");
+		const accountData = safeJSONParse<{ userId: string }>(
+			await symmetricDecodeJWT(
+				accountSetCookie?.value || "",
+				ctx.secretConfig,
+				"better-auth-account",
+			),
+		);
+		expect(accountData?.userId).toBe(session?.user.id);
+	});
+
+	it("should still expire another user's stale account cookie when the response issues no fresh one", async () => {
+		const { auth, client, cookieSetter } = await getInstance();
+		const ctx = await auth.$context;
+		const accountDataCookieName = ctx.authCookies.accountData.name;
+
+		// User A signs in with Google, storing their account_data cookie
+		const headers = new Headers();
+		googleUser = { email: "expire-first@test.com", sub: "expire-first-sub" };
+		const firstSignIn = await client.signIn.social({
+			provider: "google",
+			callbackURL: "/callback",
+			fetchOptions: {
+				onSuccess: cookieSetter(headers),
+			},
+		});
+		const firstState =
+			firstSignIn.data && "url" in firstSignIn.data && firstSignIn.data.url
+				? new URL(firstSignIn.data.url).searchParams.get("state") || ""
+				: "";
+		await client.$fetch("/callback/google", {
+			query: { state: firstState, code: "test" },
+			headers,
+			method: "GET",
+			onError(context) {
+				expect(context.response.status).toBe(302);
+				cookieSetter(headers)({ response: context.response });
+			},
+		});
+
+		// User B signs up with email/password, which issues no account cookie
+		let signUpSetCookie = "";
+		await client.signUp.email(
+			{
+				email: "expire-second@test.com",
+				password: "password123456",
+				name: "Second User",
+			},
+			{
+				headers,
+				onSuccess(context) {
+					signUpSetCookie = context.response.headers.get("set-cookie") || "";
+				},
+			},
+		);
+
+		// User A's stale cookie must be expired on user mismatch
+		const accountSetCookie = parseSetCookieHeader(signUpSetCookie).get(
+			accountDataCookieName,
+		);
+		expect(accountSetCookie?.value).toBeFalsy();
+		expect(accountSetCookie?.["max-age"]).toBe(0);
 	});
 });
