@@ -173,13 +173,13 @@ export function mcpAuthMcpUse(config: McpUseBetterAuthConfig): OAuthProvider {
 				return config.getUserInfo(payload);
 			}
 			const scopes =
-				typeof payload.scopes === "string" ? payload.scopes.split(" ") : [];
+				typeof payload.scope === "string" ? payload.scope.split(" ") : [];
 			return {
-				userId: payload.userId as string,
+				userId: payload.sub as string,
 				roles: [],
 				permissions: scopes,
-				scopes: payload.scopes as string | undefined,
-				clientId: payload.clientId as string | undefined,
+				scopes: payload.scope as string | undefined,
+				clientId: payload.client_id as string | undefined,
 			};
 		},
 
@@ -188,11 +188,11 @@ export function mcpAuthMcpUse(config: McpUseBetterAuthConfig): OAuthProvider {
 		},
 
 		getAuthEndpoint() {
-			return `${authURL}/mcp/authorize`;
+			return `${authURL}/oauth2/authorize`;
 		},
 
 		getTokenEndpoint() {
-			return `${authURL}/mcp/token`;
+			return `${authURL}/oauth2/token`;
 		},
 
 		getScopesSupported() {
@@ -208,7 +208,7 @@ export function mcpAuthMcpUse(config: McpUseBetterAuthConfig): OAuthProvider {
 		},
 
 		getRegistrationEndpoint() {
-			return `${authURL}/mcp/register`;
+			return `${authURL}/oauth2/register`;
 		},
 	};
 }

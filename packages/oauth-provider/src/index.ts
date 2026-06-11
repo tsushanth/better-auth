@@ -1,4 +1,3 @@
-export { mcpHandler } from "./mcp";
 export {
 	authServerMetadata,
 	oauthProviderAuthServerMetadata,

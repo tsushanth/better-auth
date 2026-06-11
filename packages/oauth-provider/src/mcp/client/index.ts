@@ -1,3 +1,6 @@
+import type { JWTPayload } from "jose";
+import { createRemoteJWKSet, jwtVerify } from "jose";
+
 export interface McpAuthClientOptions {
 	authURL: string;
 	resource?: string;
@@ -5,14 +8,10 @@ export interface McpAuthClientOptions {
 	fetch?: typeof globalThis.fetch;
 }
 
-export interface McpSession {
-	accessToken: string;
-	refreshToken: string;
-	accessTokenExpiresAt: string;
-	refreshTokenExpiresAt: string;
-	clientId: string;
-	userId: string;
-	scopes: string;
+export interface McpSession extends JWTPayload {
+	sub?: string;
+	scope?: string;
+	client_id?: string;
 }
 
 interface OAuthDiscoveryMetadata {
@@ -144,26 +143,38 @@ export function createMcpAuthClient(
 		: options.authURL;
 	const fetchFn = options.fetch ?? globalThis.fetch;
 	const corsHeaders = buildCorsHeaders(authURL, options.allowedOrigin);
+	const audience = options.resource ?? new URL(authURL).origin;
+
+	let discovery: { issuer: string; jwks_uri: string } | null = null;
+	let jwks: ReturnType<typeof createRemoteJWKSet> | null = null;
+
+	const loadVerifier = async () => {
+		if (discovery && jwks) {
+			return { discovery, jwks };
+		}
+		const response = await fetchFn(
+			`${authURL}/.well-known/oauth-authorization-server`,
+		);
+		if (!response.ok) {
+			throw new Error("Failed to fetch discovery metadata");
+		}
+		const metadata = (await response.json()) as OAuthDiscoveryMetadata;
+		if (!metadata.jwks_uri || !metadata.issuer) {
+			throw new Error("Discovery metadata missing jwks_uri or issuer");
+		}
+		discovery = { issuer: metadata.issuer, jwks_uri: metadata.jwks_uri };
+		jwks = createRemoteJWKSet(new URL(metadata.jwks_uri));
+		return { discovery, jwks };
+	};
 
 	const verifyToken = async (token: string): Promise<McpSession | null> => {
 		try {
-			const response = await fetchFn(`${authURL}/mcp/get-session`, {
-				method: "GET",
-				headers: {
-					Authorization: `Bearer ${token}`,
-				},
+			const { discovery: meta, jwks: keySet } = await loadVerifier();
+			const { payload } = await jwtVerify(token, keySet, {
+				issuer: meta.issuer,
+				audience,
 			});
-
-			if (!response.ok) {
-				return null;
-			}
-
-			const data = await response.json();
-			if (!data || !data.userId) {
-				return null;
-			}
-
-			return data as McpSession;
+			return payload as McpSession;
 		} catch {
 			return null;
 		}

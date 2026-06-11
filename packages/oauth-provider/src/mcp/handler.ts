@@ -2,11 +2,11 @@ import { isAPIError } from "better-auth/api";
 import { verifyAccessToken } from "better-auth/oauth2";
 import { APIError } from "better-call";
 import type { JWTPayload } from "jose";
-import type { Awaitable } from "./types/helpers";
+import type { Awaitable } from "../types/helpers";
 
 /**
- * A request middleware handler that checks and responds with
- * a WWW-Authenticate header for unauthenticated responses.
+ * A request middleware handler that verifies an MCP access token and responds
+ * with an RFC 9728 `WWW-Authenticate` header for unauthenticated requests.
  *
  * @external
  */
