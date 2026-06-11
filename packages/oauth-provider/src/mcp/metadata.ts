@@ -45,10 +45,14 @@ export const getMcpProtectedResourceMetadata = (
 	ctx: GenericEndpointContext,
 	options: MCPOptions,
 ): MCPProtectedResourceMetadata => {
-	const origin = new URL(ctx.context.baseURL).origin;
+	const baseURL = ctx.context.baseURL;
+	const origin = new URL(baseURL).origin;
 	return {
 		resource: options.resource ?? origin,
-		authorization_servers: [origin],
+		// The authorization server is identified by its issuer, which is the
+		// value advertised in the discovery document (the base URL including the
+		// configured base path), not the bare origin.
+		authorization_servers: [baseURL],
 		scopes_supported: options.scopes
 			? [...options.scopes]
 			: [...DEFAULT_MCP_SCOPES],

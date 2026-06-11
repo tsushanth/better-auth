@@ -67,7 +67,12 @@ export const withMcpAuth = <Auth extends { options: BetterAuthOptions }>(
 	const resource = opts?.resource ?? origin;
 	const issuer = opts?.issuer ?? baseURL;
 	const jwksUrl = opts?.jwksUrl ?? `${baseURL}${basePath}/jwks`;
-	const resourceMetadata = `${origin}/.well-known/oauth-protected-resource`;
+	// RFC 9728: the resource metadata URL inserts the resource path after the
+	// well-known segment, so a resource with a path resolves correctly.
+	const resourceUrl = new URL(resource);
+	const resourcePath =
+		resourceUrl.pathname === "/" ? "" : resourceUrl.pathname.replace(/\/$/, "");
+	const resourceMetadata = `${resourceUrl.origin}/.well-known/oauth-protected-resource${resourcePath}`;
 
 	return async (req: Request): Promise<Response> => {
 		const authorization = req.headers?.get("authorization") ?? undefined;

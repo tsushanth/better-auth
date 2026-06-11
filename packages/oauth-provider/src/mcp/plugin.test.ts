@@ -141,7 +141,7 @@ describe("mcp plugin", async () => {
 
 			expect(metadata).toMatchObject({
 				resource: origin,
-				authorization_servers: [origin],
+				authorization_servers: [baseURL],
 				bearer_methods_supported: ["header"],
 			});
 			expect(metadata.scopes_supported).toContain("offline_access");
