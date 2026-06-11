@@ -1,5 +1,5 @@
 import type { GenericEndpointContext } from "@better-auth/core";
-import type { OAuthOptions } from "../types";
+import type { OAuthOptions, Scope } from "../types";
 
 /**
  * Default scopes advertised by an MCP authorization server. `offline_access`
@@ -16,7 +16,7 @@ export const DEFAULT_MCP_SCOPES = [
  * Options for the {@link mcp} plugin. Extends the full OAuth provider
  * configuration with the MCP resource identifier.
  */
-export interface MCPOptions extends OAuthOptions {
+export interface MCPOptions extends OAuthOptions<Scope[]> {
 	/**
 	 * The protected resource identifier (RFC 8707 / RFC 9728) that access
 	 * tokens are bound to. Advertised as `resource` in the protected resource

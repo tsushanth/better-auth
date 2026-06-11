@@ -1,3 +1,4 @@
+export { mcpHandler } from "./mcp/handler";
 export {
 	authServerMetadata,
 	oauthProviderAuthServerMetadata,

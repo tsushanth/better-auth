@@ -1,6 +1,7 @@
 import { createAuthEndpoint } from "better-auth/api";
 import type { BetterAuthPlugin } from "better-auth/types";
 import { oauthProvider } from "../oauth";
+import { ResourceUriSchema } from "../types/zod";
 import type { MCPOptions } from "./metadata";
 import {
 	DEFAULT_MCP_SCOPES,
@@ -30,8 +31,13 @@ import {
  * });
  * ```
  */
-export const mcp = (options: MCPOptions) => {
+export const mcp = (options: MCPOptions): BetterAuthPlugin => {
 	const { resource, ...oauthOptions } = options;
+	if (resource !== undefined) {
+		// RFC 8707: reject an invalid or fragment-containing resource before it is
+		// published in the protected resource metadata.
+		ResourceUriSchema.parse(resource);
+	}
 	const provider = oauthProvider({
 		// MCP clients self-register; public clients use PKCE without a secret.
 		allowDynamicClientRegistration: true,

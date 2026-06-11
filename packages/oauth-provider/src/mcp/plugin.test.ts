@@ -146,6 +146,16 @@ describe("mcp plugin", async () => {
 			});
 			expect(metadata.scopes_supported).toContain("offline_access");
 		});
+
+		it("rejects a resource identifier that contains a URI fragment", () => {
+			expect(() =>
+				mcp({
+					loginPage: "/login",
+					consentPage: "/consent",
+					resource: "https://api.example.com/mcp#fragment",
+				}),
+			).toThrow();
+		});
 	});
 
 	describe("withMcpAuth", () => {
